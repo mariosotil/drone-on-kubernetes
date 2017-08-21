@@ -1,0 +1,196 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: drone-server-configuration
+data:
+  io.drone.github.client: ##GITHUB-CLIENT-ID##
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: drone-server-secret
+data:
+  io.drone.github.secret: ##BASE64-ENCONDED-VALUE##
+  io.drone.secret: ##BASE64-ENCONDED-VALUE##
+
+---
+kind: PersistentVolume
+apiVersion: v1
+metadata:
+  name: drone-server-volume
+  labels:
+    service: drone-server  
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 3Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  awsElasticBlockStore:
+    volumeID: aws://us-east-1a/vol-##AWS-VOLUME-ID##
+    fsType: ext4
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: drone-server-claim0
+  name: drone-server-claim0
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: manual
+  selector:
+    matchLabels:
+      service: drone-server
+status: {}
+
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  name: drone-server
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: drone-server
+    spec:
+      containers:
+      - image: drone/drone:0.7
+        imagePullPolicy: Always
+        name: drone-server
+        env:
+        - name: DOCKER_API_VERSION
+          value: "1.24"
+        - name: DRONE_HOST
+          value: ##DRONE-SITE-URL-LIKE-https://drone.mybusiness.com##
+        - name: DRONE_GITHUB
+          value: "true"
+        - name: DRONE_OPEN
+          value: "true"
+        - name: DRONE_ORGS
+          value: mybusiness
+        - name: DRONE_GITHUB_CLIENT
+          valueFrom:
+            configMapKeyRef:
+              name: drone-server-configuration
+              key: io.drone.github.client
+        - name: DRONE_GITHUB_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: drone-server-secret
+              key: io.drone.github.secret
+        - name: DRONE_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: drone-server-secret
+              key: io.drone.secret
+        - name: DRONE_ADMIN
+          value: droneadmin
+        ports:
+        - containerPort: 8000
+        resources: {}
+        volumeMounts:
+        - mountPath: /var/lib/drone/
+          name: drone-server-claim0
+      restartPolicy: Always
+      volumes:
+      - name: drone-server-claim0
+        persistentVolumeClaim:
+          claimName: drone-server-claim0
+status: {}
+
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  name: drone-agent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: drone-agent
+    spec:
+      containers:
+      - image: drone/drone:0.7
+        imagePullPolicy: Always
+        name: drone-agent
+        args:
+        - agent
+        env:
+        - name: DRONE_DEBUG
+          value: "true"
+        - name: DOCKER_API_VERSION
+          value: "1.24"
+        - name: DRONE_SERVER
+          value: ws://drone-server/ws/broker
+        - name: DRONE_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: drone-server-secret
+              key: io.drone.secret
+        volumeMounts:
+        - name: drone-socket
+          mountPath: /var/run/docker.sock
+        - name: drone-lib
+          mountPath: /var/lib/docker
+      restartPolicy: Always
+      volumes:
+      - name: drone-socket
+        hostPath:
+          path: /var/run/docker.sock
+      - name: drone-lib
+        hostPath:
+          path: /var/lib/docker
+          
+---
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: drone-server
+  name: drone-server
+spec:
+  type: LoadBalancer
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8000
+  selector:
+    io.kompose.service: drone-server
+status:
+  loadBalancer: {}
+  
+---
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: drone-agent
+  name: drone-agent
+spec:
+  ports:
+  - port: 55555
+    targetPort: 0
+  selector:
+    io.kompose.service: drone-agent
